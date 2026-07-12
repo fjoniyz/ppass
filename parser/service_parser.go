@@ -1,0 +1,45 @@
+package parser
+
+import (
+	"fmt"
+	"log/slog"
+	"strings"
+
+	"gopkg.in/yaml.v2"
+)
+
+type Technology string
+
+const (
+	Go     Technology = "go"
+	Java   Technology = "java"
+	Python Technology = "python"
+)
+
+// Struct for the service configuration inside of the Nginx load balancer
+type ServiceNginxConfig struct {
+	UpstreamName string `yaml:"upstreamname"`
+	Servers      []string `yaml:"servers"`
+	ListenPort   int      `yaml:"listenport"`
+	Domain       string   `yaml:"domain"`
+}
+
+type Service struct {
+	Name       string     `yaml:"name"`
+	Lb         bool       `yaml:"lb"`
+	Path       string     `yaml:"path"`
+	Technology Technology `yaml:"technology"`
+	LbConfig   ServiceNginxConfig `yaml:"lbconfig"`
+	Pid        int
+}
+
+func (s *Service) ParseService(body string) {
+	if err := yaml.Unmarshal([]byte(body), s); err != nil {
+		slog.Error("Failed to unmarshal service body", "error", err)
+		return
+	}
+	s.Technology = Technology(strings.TrimSpace(string(s.Technology)))
+	s.Name = strings.TrimSpace(s.Name)
+	s.Path = strings.TrimSpace(s.Path)
+	fmt.Println("File read successfully:", s.Name)
+}

@@ -1,0 +1,12 @@
+type: service
+body: |
+  name: second-service
+  lb: true
+  path: /home/d0sta/private_paas/config_files/python/second_service.py
+  technology: python
+  lbconfig:
+    upstreamname: second_service
+    servers:
+      - 10.0.0.3:8888
+    listenport: 8081
+    domain: second.local

@@ -1,0 +1,4 @@
+type: db 
+body: |
+  name: dummy-db 
+

@@ -16,21 +16,27 @@ const (
 	Python Technology = "python"
 )
 
-// Struct for the service configuration inside of the Nginx load balancer
 type ServiceNginxConfig struct {
-	UpstreamName string `yaml:"upstreamname"`
+	UpstreamName string   `yaml:"upstreamname"`
 	Servers      []string `yaml:"servers"`
 	ListenPort   int      `yaml:"listenport"`
 	Domain       string   `yaml:"domain"`
 }
 
+type Limitations struct {
+	Memory string `yaml:"memory,omitempty"`
+	CPU    string `yaml:"cpu,omitempty"`
+	Pids   string `yaml:"pids,omitempty"`
+}
+
 type Service struct {
-	Name       string     `yaml:"name"`
-	Lb         bool       `yaml:"lb"`
-	Path       string     `yaml:"path"`
-	Technology Technology `yaml:"technology"`
-	LbConfig   ServiceNginxConfig `yaml:"lbconfig"`
-	Pid        int
+	Name        string             `yaml:"name"`
+	Lb          bool               `yaml:"lb"`
+	Path        string             `yaml:"path"`
+	Technology  Technology         `yaml:"technology"`
+	LbConfig    ServiceNginxConfig `yaml:"lbconfig"`
+	Limitations Limitations        `yaml:"limitations"`
+	Pid         int
 }
 
 func (s *Service) ParseService(body string) {

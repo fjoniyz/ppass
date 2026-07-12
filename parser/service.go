@@ -84,16 +84,26 @@ func (s *Service) cg(pid int) {
 
 	v2Path := filepath.Join("/sys/fs/cgroup", cgroupName)
 	if err := os.MkdirAll(v2Path, 0o755); err == nil {
-		_ = os.WriteFile(filepath.Join(v2Path, "pids.max"), []byte("10"), 0o644)
-
-		if err := os.WriteFile(
-			filepath.Join(v2Path, "cgroup.procs"),
-			[]byte(strconv.Itoa(pid)),
-			0o644,
-		); err != nil {
-			log.Fatalf("cgroup v2: failed to write cgroup.procs: %v", err)
-		}
 		slog.Info("Process added to cgroup v2", "pid", pid, "cgroup", v2Path)
+		lim := s.Limitations
+
+		if lim.Memory != "" {
+			if err := os.WriteFile(filepath.Join(v2Path, "memory.max"), []byte(s.Limitations.Memory), 0o644); err != nil {
+				slog.Error("Failed to set memory limit", "error", err)
+			}
+		}
+
+		if lim.CPU != "" {
+			if err := os.WriteFile(filepath.Join(v2Path, "cpu.max"), []byte(s.Limitations.CPU), 0o644); err != nil {
+				slog.Error("Failed to set CPU limit", "error", err)
+			}
+		}
+
+		if lim.Pids != "" {
+			if err := os.WriteFile(filepath.Join(v2Path, "pids.max"), []byte(s.Limitations.Pids), 0o644); err != nil {
+				slog.Error("Failed to set PIDs limit", "error", err)
+			}
+		}
 		return
 	}
 }

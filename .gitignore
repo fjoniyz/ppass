@@ -27,3 +27,5 @@ go.work.sum
 # env file
 .env
 
+# For the binary file I will always name it paas so I will hardcode it
+paas

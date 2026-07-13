@@ -37,7 +37,6 @@ func RunInNamespace(pid int, args ...string) error {
 	return nil
 }
 
-// Get the network namespace ID for a given process ID by reading the symbolic link in /proc/[pid]/ns/net
 func GetNetworkNamespaceForProcess(pid int) (string, error) {
 	pidStr := strconv.Itoa(pid)
 	nsPath := "/proc/" + pidStr + "/ns/net"
@@ -161,15 +160,17 @@ func StopEnvoy() error {
 func moveProcessToEnvoyCgroup(pid int) {
 	v2Path := "/sys/fs/cgroup/envoyLb"
 	logMsg := ""
-	if err := os.MkdirAll(v2Path, 0755); err == nil {
-		_ = os.WriteFile(v2Path+"/pids.max", []byte("100"), 0644)
-		if err := os.WriteFile(v2Path+"/cgroup.procs", []byte(strconv.Itoa(pid)), 0644); err != nil {
+	if err := os.MkdirAll(v2Path, 0o755); err == nil {
+		_ = os.WriteFile(v2Path+"/pids.max", []byte("100"), 0o644)
+
+		if err := os.WriteFile(v2Path+"/cgroup.procs", []byte(strconv.Itoa(pid)), 0o644); err != nil {
 			logMsg = fmt.Sprintf("Failed to write to Envoy cgroup.procs: %v\n", err)
 			slog.Warn("Failed to write to Envoy cgroup.procs", "error", err)
 		} else {
 			logMsg = fmt.Sprintf("Envoy process added to cgroup v2: pid=%d, cgroup=%s\n", pid, v2Path)
 			slog.Info("Envoy process added to cgroup v2", "pid", pid, "cgroup", v2Path)
 		}
+
 	} else {
 		logMsg = fmt.Sprintf("Failed to create cgroup for Envoy: %v\n", err)
 		slog.Warn("Failed to create cgroup for Envoy", "error", err)
@@ -184,11 +185,11 @@ func moveProcessToEnvoyCgroup(pid int) {
 		logMsg += fmt.Sprintf("Envoy cgroup:\n%s\n", string(envoyCgroup))
 	}
 	// Read envoyLb cgroup.procs
-	if procs, err := os.ReadFile(v2Path+"/cgroup.procs"); err == nil {
+	if procs, err := os.ReadFile(v2Path + "/cgroup.procs"); err == nil {
 		logMsg += fmt.Sprintf("envoyLb cgroup.procs:\n%s\n", string(procs))
 	}
 
-	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0644)
+	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0o644)
 }
 
 // Start Envoy process
@@ -203,10 +204,10 @@ func StartEnvoy() (int, error) {
 	}
 
 	// Ensure the config file exists
-	_ = os.MkdirAll("/run", 0755)
+	_ = os.MkdirAll("/run", 0o755)
 	if _, err := os.Stat("/run/envoy-paas.yaml"); os.IsNotExist(err) {
 		bootstrapConfig := "static_resources:\n  listeners: []\n  clusters: []\n"
-		_ = os.WriteFile("/run/envoy-paas.yaml", []byte(bootstrapConfig), 0644)
+		_ = os.WriteFile("/run/envoy-paas.yaml", []byte(bootstrapConfig), 0o644)
 	}
 
 	// Start envoy with custom config
@@ -216,7 +217,11 @@ func StartEnvoy() (int, error) {
 		Cloneflags: syscall.CLONE_NEWNET,
 	}
 
-	logFile, err := os.OpenFile("/var/log/envoy-paas.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile(
+		"/var/log/envoy-paas.log",
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		0o644,
+	)
 	if err == nil {
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
@@ -238,7 +243,7 @@ func StartEnvoy() (int, error) {
 	moveProcessToEnvoyCgroup(pid)
 
 	// Write PID file
-	if err := os.WriteFile("/run/envoy-paas.pid", []byte(strconv.Itoa(pid)), 0644); err != nil {
+	if err := os.WriteFile("/run/envoy-paas.pid", []byte(strconv.Itoa(pid)), 0o644); err != nil {
 		slog.Error("Failed to write Envoy PID file", "error", err)
 	}
 

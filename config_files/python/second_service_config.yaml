@@ -2,7 +2,7 @@ type: service
 body: |
   name: second-service
   lb: true
-  path: /home/d0sta/private_paas/config_files/python/second_service.py
+  path: /home/d0sta/ppass/config_files/python/second_service.py
   technology: python
   lbconfig:
     upstreamname: second_service

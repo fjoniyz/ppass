@@ -72,9 +72,9 @@ func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge) {
 		log.Fatalf("Failed to release process: %v", err)
 	}
 
-	err = syscall.Chroot("/home/d0sta/private_paas/rootfs/")
+	err = syscall.Chroot("/home/d0sta/ppass/rootfs/")
 	if err != nil {
-		log.Fatalf("Failed to chroot: %v", err)
+		log.Fatalf("Failed to chroot to rootfs: %v", err)
 	}
 }
 

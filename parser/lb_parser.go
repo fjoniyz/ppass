@@ -73,7 +73,7 @@ type EnvoyService struct {
 	Servers      []EnvoyServer
 }
 
-func UpdateLbConfig(config ServiceNginxConfig) {
+func UpdateLbConfig(config ServiceEnvoyConfig) {
 	slog.Info("Updating Envoy LB config", "upstream", config.UpstreamName, "listen_port", config.ListenPort)
 
 	// 1. Ensure directory exists
@@ -105,13 +105,13 @@ func UpdateLbConfig(config ServiceNginxConfig) {
 			slog.Warn("Failed to read config file", "file", file, "error", err)
 			continue
 		}
-		var srvConfig ServiceNginxConfig
+		var srvConfig ServiceEnvoyConfig
 		if err := yaml.Unmarshal(data, &srvConfig); err != nil {
 			slog.Warn("Failed to unmarshal config file", "file", file, "error", err)
 			continue
 		}
 
-		// Convert ServiceNginxConfig to EnvoyService
+		// Convert ServiceEnvoyConfig to EnvoyService
 		es := EnvoyService{
 			UpstreamName: srvConfig.UpstreamName,
 			ListenPort:   srvConfig.ListenPort,

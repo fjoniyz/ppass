@@ -3,7 +3,7 @@ The main idea of this project is to create a platform, for deploying new service
 While we can achieve this also using Kubernetes, we want to learn more about Linux and this is why we have the homelab. 
 
 ## High level components
-There will be a node which holds the Nginx load balancer and other nodes which will have the respective workloads. To achieve this architecture, we need the following high level components:
+There will be a node which holds the Envoy load balancer and other nodes which will have the respective workloads. To achieve this architecture, we need the following high level components:
 1. Data plane node
 2. Control plane node(s)
 
@@ -13,9 +13,9 @@ Controlling the cluster here means to do the following:
 
 1. Manage each workload running in the cluster
 2. Send instructions to the nodes
-3. Run the Nginx load balancer
+3. Run the Envoy load balancer
 
-The Nginx load balancer is run as a simple "container"(in this project a container is a process which we control ourselves and not a container which gets created by Docker or Linux automatically). 
+The Envoy load balancer is run as a simple "container"(in this project a container is a process which we control ourselves and not a container which gets created by Docker or Linux automatically). 
 
 How each of these components works in detail I will explain further below.
 
@@ -47,7 +47,7 @@ They don't share however their namespace resources with other processes or conta
 
 ### Load balancer
 The load balancer running on the data plane, has the task of distributing the requests to the specific workloads. 
-It's an Nginx load balancer and we need to make sure that for each new workload, there is no collision of logic between them. 
+It's an Envoy load balancer and we need to make sure that for each new workload, there is no collision of logic between them. 
 Since we are using only one other node at the moment, this is not a big issue since there cannot be two processes listening to the same port however for the future we need to keep this in mind.
 
 ### Data plane processes 

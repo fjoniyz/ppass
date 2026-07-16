@@ -108,7 +108,7 @@ func (s *Service) cg(pid int) {
 	}
 }
 
-// Returns the PID of the nginx master process
+// ConnectToLb connects the service process to the load balancer bridge
 func (s *Service) ConnectToLb(bridge *netlink.Bridge) {
 	slog.Info("Connecting service to bridge", "service", s.Name, "bridge", bridge.Attrs().Name)
 

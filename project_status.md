@@ -9,9 +9,9 @@ This project is a custom **Private PaaS (Platform as a Service)** written in Go.
 *   [parser/](file:///home/d0sta/private_paas/parser/):
     *   [service.go](file:///home/d0sta/private_paas/parser/service.go) / [service_parser.go](file:///home/d0sta/private_paas/parser/service_parser.go): Parses YAML declarations for services, executes them as isolated Python subprocesses with `CLONE_NEWNET`, setups resource restrictions using cgroups, and links them to the software bridge.
     *   [db.go](file:///home/d0sta/private_paas/parser/db.go) / [db_parser.go](file:///home/d0sta/private_paas/parser/db_parser.go): Manages Postgres database configurations, invoking databases in separate namespaces via `ip netns exec`.
-    *   [lb_parser.go](file:///home/d0sta/private_paas/parser/lb_parser.go): Dynamically templates Nginx routing directives and handles Nginx server reload actions.
+    *   [lb_parser.go](file:///home/d0sta/private_paas/parser/lb_parser.go): Dynamically templates Envoy routing directives and handles Envoy server reload/restart actions.
 *   [config_files/python/](file:///home/d0sta/private_paas/config_files/python/): Contains testing workloads like `dummy_service.py` (port 9999), `second_service.py` (port 8888), and YAML definition templates.
-*   [utils/network.go](file:///home/d0sta/private_paas/utils/network.go): A helper utility to locate the master PID of the host's Nginx server.
+*   [utils/network.go](file:///home/d0sta/private_paas/utils/network.go): A helper utility to locate the PID of the Envoy server.
 *   [scripts/clean_interfaces.sh](file:///home/d0sta/private_paas/scripts/clean_interfaces.sh): A cleanup utility script to purge virtual ethernet interfaces with the `v-` prefix.
 
 ---
@@ -20,11 +20,11 @@ This project is a custom **Private PaaS (Platform as a Service)** written in Go.
 
 ### 1. Networking Setup & Gaps vs. [plan.md](file:///home/d0sta/private_paas/plan.md)
 The project's active refactoring goals listed in `plan.md` are:
-1. **Nginx isolation:** Nginx should run in its own namespace, get a network interface, and attach to the bridge.
+1. **Envoy isolation:** Envoy should run in its own namespace, get a network interface, and attach to the bridge.
 2. **Workload connection:** Each workload process must get a network interface and connect to the bridge.
 
 **Current implementation state:**
-*   **Nginx is isolated:** Nginx is now launched inside its own network namespace via the `syscall.CLONE_NEWNET` flag and attached to the `br0` bridge with the IP `10.0.0.1/24`. Both items on the plan have been successfully resolved.
+*   **Envoy is isolated:** Envoy is now launched inside its own network namespace via the `syscall.CLONE_NEWNET` flag and attached to the `br0` bridge with the IP `10.0.0.1/24`. Both items on the plan have been successfully resolved.
 *   **IP Allocation Collisions (Remaining Issue):** The system still uses static placeholder IPs:
     *   Services are hardcoded to use `10.0.0.2/24` (see [service.go:L104](file:///home/d0sta/private_paas/parser/service.go#L104)).
     *   Databases are hardcoded to use `10.0.0.3/24` (see [db.go:L24](file:///home/d0sta/private_paas/parser/db.go#L24)).

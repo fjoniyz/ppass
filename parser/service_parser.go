@@ -16,7 +16,7 @@ const (
 	Python Technology = "python"
 )
 
-type ServiceNginxConfig struct {
+type ServiceEnvoyConfig struct {
 	UpstreamName string   `yaml:"upstreamname"`
 	Servers      []string `yaml:"servers"`
 	ListenPort   int      `yaml:"listenport"`
@@ -34,7 +34,7 @@ type Service struct {
 	Lb          bool               `yaml:"lb"`
 	Path        string             `yaml:"path"`
 	Technology  Technology         `yaml:"technology"`
-	LbConfig    ServiceNginxConfig `yaml:"lbconfig"`
+	LbConfig    ServiceEnvoyConfig `yaml:"lbconfig"`
 	Limitations Limitations        `yaml:"limitations"`
 	Pid         int
 }

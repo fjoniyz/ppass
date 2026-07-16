@@ -6,12 +6,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 
 	"private_paas/utils"
 )
@@ -28,12 +30,82 @@ type Pair struct {
 	p2 ProcessStruct
 }
 
-func RunInNamespace(pid int, args ...string) error {
-	fullArgs := append([]string{"-t", strconv.Itoa(pid), "-n"}, args...)
-	cmd := exec.Command("nsenter", fullArgs...)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("nsenter failed: %v, output: %s", err, string(output))
+func configureInterfaceInNamespace(
+	pid int,
+	vethName string,
+	ipStr string,
+	peerIP net.IP,
+	enableLo bool,
+) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	origns, err := netns.Get()
+	if err != nil {
+		return fmt.Errorf("failed to get current netns: %w", err)
 	}
+	defer origns.Close()
+
+	targetns, err := netns.GetFromPid(pid)
+	if err != nil {
+		return fmt.Errorf("failed to get netns for pid %d: %w", pid, err)
+	}
+	defer targetns.Close()
+
+	if err := netns.Set(targetns); err != nil {
+		return fmt.Errorf("failed to enter netns for pid %d: %w", pid, err)
+	}
+	defer func() {
+		if err := netns.Set(origns); err != nil {
+			slog.Error("Failed to restore original netns", "error", err)
+		}
+	}()
+	link, err := netlink.LinkByName(vethName)
+	if err != nil {
+		return fmt.Errorf("failed to find link %s inside namespace: %w", vethName, err)
+	}
+
+	addr, err := netlink.ParseAddr(ipStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse IP address %s: %w", ipStr, err)
+	}
+	if err := netlink.AddrAdd(link, addr); err != nil {
+		return fmt.Errorf("failed to add IP %s to link %s: %w", ipStr, vethName, err)
+	}
+
+	if err := netlink.LinkSetUp(link); err != nil {
+		return fmt.Errorf("failed to set link %s up: %w", vethName, err)
+	}
+
+	if peerIP != nil {
+		route := &netlink.Route{
+			LinkIndex: link.Attrs().Index,
+			Dst: &net.IPNet{
+				IP:   peerIP,
+				Mask: net.CIDRMask(32, 32),
+			},
+		}
+		if err := netlink.RouteAdd(route); err != nil {
+			slog.Warn(
+				"Failed to add route to peer in namespace",
+				"pid",
+				pid,
+				"peer",
+				peerIP,
+				"error",
+				err,
+			)
+		}
+	}
+
+	if enableLo {
+		if lo, err := netlink.LinkByName("lo"); err == nil {
+			if err := netlink.LinkSetUp(lo); err != nil {
+				slog.Warn("Failed to set lo up in namespace", "pid", pid, "error", err)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -95,37 +167,18 @@ func createVethPair(pair Pair, ip1, ip2 string) error {
 		return err
 	}
 
-	// Now configure them INSIDE the namespaces using nsenter
-	// Configuration for Nginx side (p1)
-	if err := RunInNamespace(pair.p1.Pid, "ip", "addr", "add", ip1, "dev", pair.p1.VethName); err != nil {
-		return err
-	}
-	if err := RunInNamespace(pair.p1.Pid, "ip", "link", "set", pair.p1.VethName, "up"); err != nil {
-		return err
-	}
-	// Extract IP without CIDR for routing
-	// Look here for the example from Go docs https://pkg.go.dev/net#example-ParseCIDR
+	// Now configure them INSIDE the namespaces using netns/netlink helper
 	ip2Addr, _, _ := net.ParseCIDR(ip2)
-	if err := RunInNamespace(pair.p1.Pid, "ip", "route", "add", ip2Addr.String(), "dev", pair.p1.VethName); err != nil {
-		slog.Warn("Failed to add route to service in nginx namespace", "error", err)
+	ip1Addr, _, _ := net.ParseCIDR(ip1)
+
+	// Configuration for Envoy side (p1)
+	if err := configureInterfaceInNamespace(pair.p1.Pid, pair.p1.VethName, ip1, ip2Addr, false); err != nil {
+		return err
 	}
 
 	// Configuration for Service side (p2)
-	if err := RunInNamespace(pair.p2.Pid, "ip", "addr", "add", ip2, "dev", pair.p2.VethName); err != nil {
+	if err := configureInterfaceInNamespace(pair.p2.Pid, pair.p2.VethName, ip2, ip1Addr, true); err != nil {
 		return err
-	}
-	if err := RunInNamespace(pair.p2.Pid, "ip", "link", "set", pair.p2.VethName, "up"); err != nil {
-		return err
-	}
-	// Extract IP without CIDR for routing
-	ip1Addr, _, _ := net.ParseCIDR(ip1)
-	if err := RunInNamespace(pair.p2.Pid, "ip", "route", "add", ip1Addr.String(), "dev", pair.p2.VethName); err != nil {
-		slog.Warn("Failed to add route to nginx in service namespace", "error", err)
-	}
-
-	// Also ensure loopback is up in the service namespace
-	if err := RunInNamespace(pair.p2.Pid, "ip", "link", "set", "lo", "up"); err != nil {
-		slog.Warn("Failed to set lo up in service namespace", "pid", pair.p2.Pid, "error", err)
 	}
 
 	return nil
@@ -261,7 +314,7 @@ func StartEnvoy() (int, error) {
 	return pid, nil
 }
 
-// Setup bridge that gets used from Nginx. If the bridge already exists, it returns the existing bridge.
+// Setup bridge that gets used from Envoy. If the bridge already exists, it returns the existing bridge.
 func CreateBridge() *netlink.Bridge {
 	la := netlink.NewLinkAttrs()
 	la.Name = "br0"
@@ -363,17 +416,8 @@ func ConnectProcessToBridge(
 	}
 
 	// Configure inside end to run in the namespace with the given IP and bring it up
-	if err := RunInNamespace(pid, "ip", "addr", "add", ip, "dev", vethInsideName); err != nil {
-		return fmt.Errorf("failed to add IP inside namespace: %v", err)
-	}
-
-	if err := RunInNamespace(pid, "ip", "link", "set", vethInsideName, "up"); err != nil {
-		return fmt.Errorf("failed to set veth inside up: %v", err)
-	}
-
-	// Also ensure loopback is up
-	if err := RunInNamespace(pid, "ip", "link", "set", "lo", "up"); err != nil {
-		slog.Warn("Failed to set lo up in namespace", "pid", pid, "error", err)
+	if err := configureInterfaceInNamespace(pid, vethInsideName, ip, nil, true); err != nil {
+		return fmt.Errorf("failed to configure veth inside in namespace: %w", err)
 	}
 
 	return nil

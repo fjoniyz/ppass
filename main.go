@@ -47,6 +47,7 @@ func deleteProcess(rdb *redis.Client, name string, type_ string) {
 	}
 
 	// 1. Kill the process
+	// TODO: Killing should be done in a more graceful way. We need to first deallocate the resources(e.g. the IP address) and then kill the process
 	pid, _ := strconv.Atoi(service.Pid)
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		slog.Error("Failed to kill process", "error", err)
@@ -74,7 +75,7 @@ func deleteProcess(rdb *redis.Client, name string, type_ string) {
 		slog.Info("Restarted Envoy process successfully")
 	}
 
-	// 4. Delete from Redis
+	// 5. Delete from Redis
 	if err := rdb.Del(ctx, key).Err(); err != nil {
 		slog.Error("Failed to delete process from Redis", "error", err)
 	} else {
@@ -177,12 +178,15 @@ func main() {
 				return
 			}
 
+			// Using goipam as IP allocator manager
+			ipamStruct := cmd.GetIp()
+
 			switch file.Type {
 			case "service":
 				slog.Info("Creating service with body", "body", file.Body)
 				bridge := cmd.CreateBridge()
 				s := parser.Service{}
-				s.CreateService(file.Body, bridge)
+				s.CreateService(file.Body, bridge, ipamStruct.Ip)
 				pidString := strconv.Itoa(s.Pid)
 
 				envoyConfigPath := ""

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,16 +13,23 @@ import (
 	"syscall"
 	"time"
 
+	goipam "github.com/metal-stack/go-ipam"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
 	"private_paas/utils"
 )
 
+type IpamStruct struct {
+	Ip   string
+	Ipam *goipam.Ipamer
+}
+
 type ProcessStruct struct {
 	Pid      int
 	NsID     string
 	VethName string
+	Ipam     IpamStruct
 }
 
 // Pair is a struct representing a virtual ethernet pair
@@ -245,8 +253,48 @@ func moveProcessToEnvoyCgroup(pid int) {
 	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0o644)
 }
 
+func ReleaseIp(ctx context.Context, ip *goipam.IP, ipam goipam.Ipamer) {
+	prefix, err := ipam.ReleaseIP(ctx, ip)
+	if err != nil {
+		slog.Error("Failed to release IP", "ip", ip, "error", err)
+	}
+	slog.Info("Released IP", "ip", ip, "prefix", prefix)
+}
+
+func GetIp() IpamStruct {
+	bgctx := context.Background()
+	ipam := goipam.New(bgctx)
+	// Get the next available IP in the
+	err := ipam.CreateNamespace(bgctx, "paas")
+	if err != nil {
+		slog.Error("Failed to create IPAM namespace", "error", err)
+	}
+	ctx := goipam.NewContextWithNamespace(bgctx, "paas")
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	prefix, err := ipam.NewPrefix(ctx, "paas")
+	if err != nil {
+		slog.Error("Failed to get IPAM prefix", "error", err)
+		return IpamStruct{}
+	}
+
+	ip, err := ipam.AcquireIP(ctx, prefix.Cidr)
+	if ip == nil || err != nil {
+		slog.Error("Failed to acquire IP", "error", err)
+		return IpamStruct{}
+	}
+	ipamStruct := IpamStruct{
+		Ip:   ip.IP.String(),
+		Ipam: &ipam,
+	}
+
+	return ipamStruct
+}
+
 // Start Envoy process
-func StartEnvoy() (int, error) {
+// It gets the IP address for the process
+func StartEnvoy(ip string) (int, error) {
 	// Stop existing PaaS envoy if any
 	pid, err := utils.FindPidForEnvoy()
 	if err == nil && pid != 0 {
@@ -302,7 +350,7 @@ func StartEnvoy() (int, error) {
 
 	// Connect Envoy to the bridge
 	bridge := CreateBridge()
-	if err := ConnectProcessToBridge(pid, bridge, "10.0.0.1/24", "v-envoy"); err != nil {
+	if err := ConnectProcessToBridge(pid, bridge, ip, "v-envoy"); err != nil {
 		slog.Error("Failed to connect Envoy to bridge", "error", err)
 	} else {
 		slog.Info("Successfully connected Envoy to bridge", "pid", pid, "ip", "10.0.0.1/24")

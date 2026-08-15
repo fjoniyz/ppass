@@ -1,4 +1,4 @@
-.PHONY: all build run-second-service test-second-service test-second-service-direct test-second-service-lb delete-second-service list logs clean help
+.PHONY: all build test run-second-service test-second-service test-second-service-direct test-second-service-lb delete-second-service list logs clean help
 
 BINARY=paas
 CONFIG=config_files/python/second_service_config.yaml
@@ -13,6 +13,7 @@ all: build
 help:
 	@echo "Available Makefile commands:"
 	@echo "  make build                     - Build the paas binary"
+	@echo "  make test                      - Run all unit tests"
 	@echo "  make run-second-service        - Build paas and launch second-service"
 	@echo "  make test-second-service       - Test service via Envoy and directly"
 	@echo "  make test-second-service-lb    - Send curl request through Envoy (10.0.0.1:8081)"
@@ -25,6 +26,10 @@ help:
 build:
 	@echo "==> Building $(BINARY)..."
 	go build -o $(BINARY) .
+
+test:
+	@echo "==> Running unit tests..."
+	go test -v ./...
 
 run-second-service: build
 	@echo "==> Starting second-service..."

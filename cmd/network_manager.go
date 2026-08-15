@@ -121,6 +121,14 @@ func configureInterfaceInNamespace(
 		}
 	}
 
+	if !strings.HasPrefix(vethName, "v-envoy") {
+		pidStr := strconv.Itoa(pid)
+		_ = exec.Command("nsenter", "-t", pidStr, "-n", "iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT").Run()
+		_ = exec.Command("nsenter", "-t", pidStr, "-n", "iptables", "-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT").Run()
+		_ = exec.Command("nsenter", "-t", pidStr, "-n", "iptables", "-A", "INPUT", "-s", "10.0.0.1", "-j", "ACCEPT").Run()
+		_ = exec.Command("nsenter", "-t", pidStr, "-n", "iptables", "-A", "INPUT", "-j", "DROP").Run()
+	}
+
 	return nil
 }
 

@@ -10,10 +10,12 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	goipam "github.com/metal-stack/go-ipam"
+	"github.com/redis/go-redis/v9"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
@@ -258,27 +260,53 @@ func moveProcessToEnvoyCgroup(pid int) {
 	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0o644)
 }
 
+var (
+	memStorage     goipam.Storage
+	memStorageOnce sync.Once
+)
+
+func getFallbackStorage(ctx context.Context) goipam.Storage {
+	memStorageOnce.Do(func() {
+		memStorage = goipam.NewMemory(ctx)
+	})
+	return memStorage
+}
+
 func GetIpam() (goipam.Ipamer, error) {
 	ctx := context.Background()
-	storage, err := goipam.NewRedis(ctx, "localhost", "6379")
-	if err != nil {
-		slog.Warn("Failed to connect to Redis for IPAM, falling back to local file storage", "error", err)
-		storage = goipam.NewLocalFile(ctx, "/var/run/paas-ipam.json")
+	var storage goipam.Storage
+
+	// Probe Redis with a quick timeout
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        "localhost:6379",
+		DialTimeout: 200 * time.Millisecond,
+	})
+	pingCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	err := rdb.Ping(pingCtx).Err()
+	cancel()
+	_ = rdb.Close()
+
+	if err == nil {
+		redisStorage, rErr := goipam.NewRedis(ctx, "localhost", "6379")
+		if rErr == nil {
+			storage = redisStorage
+		}
 	}
+
+	if storage == nil {
+		storage = getFallbackStorage(ctx)
+	}
+
 	ipam := goipam.NewWithStorage(storage)
 
-	// Ensure the "paas" namespace exists
-	_ = ipam.CreateNamespace(ctx, "paas")
-	nsCtx := goipam.NewContextWithNamespace(ctx, "paas")
-
-	prefix, err := ipam.PrefixFrom(nsCtx, "10.0.0.0/24")
+	prefix, err := ipam.PrefixFrom(ctx, "10.0.0.0/24")
 	if err != nil || prefix == nil {
-		_, err = ipam.NewPrefix(nsCtx, "10.0.0.0/24")
+		_, err = ipam.NewPrefix(ctx, "10.0.0.0/24")
 		if err != nil && !strings.Contains(err.Error(), "already") {
 			return nil, fmt.Errorf("failed to create IPAM prefix: %w", err)
 		}
 		// Reserve 10.0.0.254 for host bridge br0
-		_, _ = ipam.AcquireSpecificIP(nsCtx, "10.0.0.0/24", "10.0.0.254")
+		_, _ = ipam.AcquireSpecificIP(ctx, "10.0.0.0/24", "10.0.0.254")
 	}
 
 	return ipam, nil
@@ -289,7 +317,7 @@ func ReleaseIp(ipStr string) error {
 	if err != nil {
 		return err
 	}
-	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
+	ctx := context.Background()
 	cleanIP := strings.Split(ipStr, "/")[0]
 	cleanIP = strings.TrimSpace(cleanIP)
 	if cleanIP == "" {
@@ -309,7 +337,7 @@ func GetOrAcquireEnvoyIp() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
+	ctx := context.Background()
 
 	// Specifically allocate 10.0.0.1 for Envoy gateway if available
 	ip, err := ipam.AcquireSpecificIP(ctx, "10.0.0.0/24", "10.0.0.1")
@@ -328,8 +356,7 @@ func GetIp() IpamStruct {
 		return IpamStruct{}
 	}
 
-	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	ip, err := ipam.AcquireIP(ctx, "10.0.0.0/24")

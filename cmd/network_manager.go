@@ -73,7 +73,12 @@ func configureInterfaceInNamespace(
 		return fmt.Errorf("failed to find link %s inside namespace: %w", vethName, err)
 	}
 
-	addr, err := netlink.ParseAddr(ipStr)
+	slog.Info("Configuring interface in namespace", "pid", pid, "vethName", vethName, "ip", ipStr)
+	cidr := ipStr
+	if !strings.Contains(cidr, "/") {
+		cidr += "/24"
+	}
+	addr, err := netlink.ParseAddr(cidr)
 	if err != nil {
 		return fmt.Errorf("failed to parse IP address %s: %w", ipStr, err)
 	}
@@ -253,37 +258,86 @@ func moveProcessToEnvoyCgroup(pid int) {
 	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0o644)
 }
 
-func ReleaseIp(ctx context.Context, ip *goipam.IP, ipam goipam.Ipamer) {
-	prefix, err := ipam.ReleaseIP(ctx, ip)
+func GetIpam() (goipam.Ipamer, error) {
+	ctx := context.Background()
+	storage, err := goipam.NewRedis(ctx, "localhost", "6379")
 	if err != nil {
-		slog.Error("Failed to release IP", "ip", ip, "error", err)
+		slog.Warn("Failed to connect to Redis for IPAM, falling back to local file storage", "error", err)
+		storage = goipam.NewLocalFile(ctx, "/var/run/paas-ipam.json")
 	}
-	slog.Info("Released IP", "ip", ip, "prefix", prefix)
+	ipam := goipam.NewWithStorage(storage)
+
+	// Ensure the "paas" namespace exists
+	_ = ipam.CreateNamespace(ctx, "paas")
+	nsCtx := goipam.NewContextWithNamespace(ctx, "paas")
+
+	prefix, err := ipam.PrefixFrom(nsCtx, "10.0.0.0/24")
+	if err != nil || prefix == nil {
+		_, err = ipam.NewPrefix(nsCtx, "10.0.0.0/24")
+		if err != nil && !strings.Contains(err.Error(), "already") {
+			return nil, fmt.Errorf("failed to create IPAM prefix: %w", err)
+		}
+		// Reserve 10.0.0.254 for host bridge br0
+		_, _ = ipam.AcquireSpecificIP(nsCtx, "10.0.0.0/24", "10.0.0.254")
+	}
+
+	return ipam, nil
+}
+
+func ReleaseIp(ipStr string) error {
+	ipam, err := GetIpam()
+	if err != nil {
+		return err
+	}
+	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
+	cleanIP := strings.Split(ipStr, "/")[0]
+	cleanIP = strings.TrimSpace(cleanIP)
+	if cleanIP == "" {
+		return nil
+	}
+	err = ipam.ReleaseIPFromPrefix(ctx, "10.0.0.0/24", cleanIP)
+	if err != nil {
+		slog.Error("Failed to release IP", "ip", cleanIP, "error", err)
+		return err
+	}
+	slog.Info("Successfully released IP", "ip", cleanIP)
+	return nil
+}
+
+func GetOrAcquireEnvoyIp() (string, error) {
+	ipam, err := GetIpam()
+	if err != nil {
+		return "", err
+	}
+	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
+
+	// Specifically allocate 10.0.0.1 for Envoy gateway if available
+	ip, err := ipam.AcquireSpecificIP(ctx, "10.0.0.0/24", "10.0.0.1")
+	if err == nil && ip != nil {
+		return ip.IP.String(), nil
+	}
+
+	// 10.0.0.1 was already allocated (e.g. from previous run), reuse it for Envoy
+	return "10.0.0.1", nil
 }
 
 func GetIp() IpamStruct {
-	bgctx := context.Background()
-	ipam := goipam.New(bgctx)
-	// Get the next available IP in the
-	err := ipam.CreateNamespace(bgctx, "paas")
+	ipam, err := GetIpam()
 	if err != nil {
-		slog.Error("Failed to create IPAM namespace", "error", err)
+		slog.Error("Failed to get IPAM instance", "error", err)
+		return IpamStruct{}
 	}
-	ctx := goipam.NewContextWithNamespace(bgctx, "paas")
+
+	ctx := goipam.NewContextWithNamespace(context.Background(), "paas")
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	prefix, err := ipam.NewPrefix(ctx, "paas")
-	if err != nil {
-		slog.Error("Failed to get IPAM prefix", "error", err)
-		return IpamStruct{}
-	}
-
-	ip, err := ipam.AcquireIP(ctx, prefix.Cidr)
-	if ip == nil || err != nil {
+	ip, err := ipam.AcquireIP(ctx, "10.0.0.0/24")
+	if err != nil || ip == nil {
 		slog.Error("Failed to acquire IP", "error", err)
 		return IpamStruct{}
 	}
+
 	ipamStruct := IpamStruct{
 		Ip:   ip.IP.String(),
 		Ipam: &ipam,
@@ -294,7 +348,7 @@ func GetIp() IpamStruct {
 
 // Start Envoy process
 // It gets the IP address for the process
-func StartEnvoy(ip string) (int, error) {
+func StartEnvoy() (int, error) {
 	// Stop existing PaaS envoy if any
 	pid, err := utils.FindPidForEnvoy()
 	if err == nil && pid != 0 {
@@ -312,7 +366,16 @@ func StartEnvoy(ip string) (int, error) {
 	}
 
 	// Start envoy with custom config
-	cmd := exec.Command("envoy", "-c", "/run/envoy-paas.yaml", "--disable-hot-restart")
+	envoyBin := "envoy"
+	if path, err := exec.LookPath("envoy"); err == nil {
+		envoyBin = path
+	} else if _, err := os.Stat("/home/linuxbrew/.linuxbrew/bin/envoy"); err == nil {
+		envoyBin = "/home/linuxbrew/.linuxbrew/bin/envoy"
+	} else if _, err := os.Stat("/usr/local/bin/envoy"); err == nil {
+		envoyBin = "/usr/local/bin/envoy"
+	}
+
+	cmd := exec.Command(envoyBin, "-c", "/run/envoy-paas.yaml", "--disable-hot-restart")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
 		Cloneflags: syscall.CLONE_NEWNET,
@@ -348,12 +411,19 @@ func StartEnvoy(ip string) (int, error) {
 		slog.Error("Failed to write Envoy PID file", "error", err)
 	}
 
+	ip, err := GetOrAcquireEnvoyIp()
+	if err != nil {
+		slog.Error("Failed to acquire IP for Envoy", "error", err)
+		return 0, err
+	}
+	slog.Info("Acquired IP for Envoy", "ip", ip)
+
 	// Connect Envoy to the bridge
 	bridge := CreateBridge()
 	if err := ConnectProcessToBridge(pid, bridge, ip, "v-envoy"); err != nil {
 		slog.Error("Failed to connect Envoy to bridge", "error", err)
 	} else {
-		slog.Info("Successfully connected Envoy to bridge", "pid", pid, "ip", "10.0.0.1/24")
+		slog.Info("Successfully connected Envoy to bridge", "pid", pid, "ip", ip)
 	}
 
 	// Wait a bit for envoy to initialize

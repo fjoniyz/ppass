@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -112,16 +111,6 @@ func (s *Service) cg(pid int) {
 func (s *Service) ConnectToLb(bridge *netlink.Bridge, ip string) {
 	slog.Info("Connecting service to bridge", "service", s.Name, "bridge", bridge.Attrs().Name)
 
-	// Set up the connection between the service and the bridge
-	// Use the IP from the config if available, otherwise fallback to a default
-	if len(s.LbConfig.Servers) > 0 {
-		// Servers are in format "IP:PORT", we need "IP/24"
-		parts := strings.Split(s.LbConfig.Servers[0], ":")
-		if len(parts) > 0 {
-			ip = parts[0] + "/24"
-		}
-	}
-
 	err := cmd.ConnectProcessToBridge(s.Pid, bridge, ip, fmt.Sprintf("v-%s", s.Name))
 	if err != nil {
 		slog.Error("Failed to connect service to bridge", "error", err)
@@ -141,6 +130,9 @@ func (s *Service) CreateService(body string, bridge *netlink.Bridge, ip string) 
 		slog.Info("Executing Python service", "name", s.Name)
 		if s.Lb {
 			slog.Info("Adding the service to the load balancer", "name", s.Name)
+			if len(s.LbConfig.Servers) == 0 {
+				s.LbConfig.Servers = []string{fmt.Sprintf("%s:8888", ip)}
+			}
 			UpdateLbConfig(s.LbConfig)
 		}
 		cmd := exec.Command("python3", s.Path)

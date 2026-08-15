@@ -51,7 +51,16 @@ func CreateEnvoy(bridge *netlink.Bridge) int {
 		return pid
 	}
 
-	cmd := exec.Command("envoy", "-c", "/run/envoy-paas.yaml")
+	envoyBin := "envoy"
+	if path, err := exec.LookPath("envoy"); err == nil {
+		envoyBin = path
+	} else if _, err := os.Stat("/home/linuxbrew/.linuxbrew/bin/envoy"); err == nil {
+		envoyBin = "/home/linuxbrew/.linuxbrew/bin/envoy"
+	} else if _, err := os.Stat("/usr/local/bin/envoy"); err == nil {
+		envoyBin = "/usr/local/bin/envoy"
+	}
+
+	cmd := exec.Command(envoyBin, "-c", "/run/envoy-paas.yaml")
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("Failed to start envoy: %v\n", err)
 		return 0

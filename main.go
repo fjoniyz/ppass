@@ -25,8 +25,9 @@ type File struct {
 }
 
 type Service struct {
-	Pid            string
-	ConfigFileName string
+	Pid            string `yaml:"pid"`
+	ConfigFileName string `yaml:"configfilename"`
+	IP             string `yaml:"ip"`
 }
 
 var ctx = context.Background()
@@ -42,12 +43,18 @@ func deleteProcess(rdb *redis.Client, name string, type_ string) {
 	// ServiceStruct is stored as a YAML string in Redis, so we need to unmarshal it back to the struct
 	var service Service
 	if err := yaml.Unmarshal([]byte(serviceStruct), &service); err != nil {
-		slog.Error("Failed to unmarshal service struct from Redis", "error", err)
-		return
+		// Fallback if stored as plain pid string
+		service.Pid = serviceStruct
+	}
+
+	// Release IP address back to IPAM pool
+	if service.IP != "" {
+		if err := cmd.ReleaseIp(service.IP); err != nil {
+			slog.Error("Failed to release IP for process", "ip", service.IP, "error", err)
+		}
 	}
 
 	// 1. Kill the process
-	// TODO: Killing should be done in a more graceful way. We need to first deallocate the resources(e.g. the IP address) and then kill the process
 	pid, _ := strconv.Atoi(service.Pid)
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		slog.Error("Failed to kill process", "error", err)
@@ -184,6 +191,7 @@ func main() {
 			switch file.Type {
 			case "service":
 				slog.Info("Creating service with body", "body", file.Body)
+				slog.Info("Allocated IP for service", "ip", ipamStruct.Ip)
 				bridge := cmd.CreateBridge()
 				s := parser.Service{}
 				s.CreateService(file.Body, bridge, ipamStruct.Ip)
@@ -200,6 +208,7 @@ func main() {
 				redisServiceEntry := Service{
 					Pid:            pidString,
 					ConfigFileName: envoyConfigPath,
+					IP:             ipamStruct.Ip,
 				}
 
 				// Marshal the struct to a string for storage in Redis
@@ -214,9 +223,15 @@ func main() {
 
 			case "db":
 				slog.Info("Creating database with body", "body", file.Body)
+				slog.Info("Allocated IP for database", "ip", ipamStruct.Ip)
 				d := parser.Database{}
-				d.CreateDatabase(file.Body)
-				rdb.Set(ctx, "database:"+d.Name, d.Pid, 0)
+				d.CreateDatabase(file.Body, ipamStruct.Ip)
+				dbEntry := Service{
+					Pid: d.Pid,
+					IP:  ipamStruct.Ip,
+				}
+				dbEntryStr, _ := yaml.Marshal(dbEntry)
+				rdb.Set(ctx, "database:"+d.Name, dbEntryStr, 0)
 			default:
 				slog.Warn("Unknown file type", "type", file.Type)
 			}

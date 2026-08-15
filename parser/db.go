@@ -14,18 +14,17 @@ import (
 	"private_paas/cmd"
 )
 
-func (d *Database) ConnectToBridge() {
+func (d *Database) ConnectToBridge(ip string) {
 	bridge := cmd.CreateBridge()
 	pid, _ := strconv.Atoi(d.Pid)
 
 	slog.Info("Connecting database to bridge", "database", d.Name, "bridge", bridge.Attrs().Name)
 
-	// Use 10.0.0.3/24 for now as a placeholder
-	err := cmd.ConnectProcessToBridge(pid, bridge, "10.0.0.3/24", fmt.Sprintf("v-%s", d.Name))
+	err := cmd.ConnectProcessToBridge(pid, bridge, ip, fmt.Sprintf("v-%s", d.Name))
 	if err != nil {
 		slog.Error("Failed to connect database to bridge", "error", err)
 	} else {
-		slog.Info("Successfully connected database to bridge", "database", d.Name)
+		slog.Info("Successfully connected database to bridge", "database", d.Name, "ip", ip)
 	}
 }
 
@@ -99,7 +98,7 @@ func (d *Database) cg(pid int) {
 
 
 
-func (d *Database) CreateDatabase(body string) {
+func (d *Database) CreateDatabase(body string, ip string) {
 	// Populate the database struct from the YAML body
 	d.ParseYaml(body)
 
@@ -107,7 +106,7 @@ func (d *Database) CreateDatabase(body string) {
 	case PostgreSQL:
 		slog.Info("Creating PostgreSQL database", "name", d.Name)
 		d.execPostgreSQL()
-		d.ConnectToBridge()
+		d.ConnectToBridge(ip)
 	default:
 		slog.Warn("Unsupported database technology", "technology", d.Technology)
 	}

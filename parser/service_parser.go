@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v2"
+
+	"private_paas/cmd"
 )
 
 type Technology string
@@ -37,6 +39,7 @@ type Service struct {
 	LbConfig    ServiceEnvoyConfig `yaml:"lbconfig"`
 	Limitations Limitations        `yaml:"limitations"`
 	Pid         int
+	Process     cmd.ProcessStruct
 }
 
 func (s *Service) ParseService(body string) {

@@ -121,6 +121,12 @@ func configureInterfaceInNamespace(
 		}
 	}
 
+	_ = exec.Command("iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT").Run()
+	_ = exec.Command("iptables", "-A", "INPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT").
+		Run()
+	_ = exec.Command("iptables", "-A", "INPUT", "-s", "10.0.0.1", "-j", "ACCEPT").Run()
+	_ = exec.Command("iptables", "-A", "INPUT", "-j", "DROP").Run()
+
 	return nil
 }
 

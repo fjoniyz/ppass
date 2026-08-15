@@ -1,5 +1,7 @@
 # Private PaaS (`ppass`)
 
+> This document and parts of the code in this repository were done via the help of AI.
+
 A lightweight, custom **Platform-as-a-Service (PaaS)** built in Go for Linux environments.
 
 Instead of relying on heavy container runtimes like Docker, containerd, or Kubernetes, `ppass` orchestrates workloads using **native Linux kernel primitives**:

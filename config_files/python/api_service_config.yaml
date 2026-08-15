@@ -1,0 +1,13 @@
+type: service
+body: |
+  name: api-service
+  lb: true
+  path: /home/d0sta/ppass/config_files/python/api_service.py
+  technology: python
+  lbconfig:
+    upstreamname: api_service
+    listenport: 8082
+    domain: api.local
+  limitations:
+    memory: "128M"
+    pids: "15"

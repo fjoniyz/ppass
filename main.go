@@ -138,23 +138,43 @@ func main() {
 			})
 			defer rdb.Close()
 
-			keys, err := rdb.Keys(ctx, "*").Result()
-			if err != nil {
-				slog.Error("Failed to fetch keys from Redis", "error", err)
+			serviceKeys, _ := rdb.Keys(ctx, "service:*").Result()
+			dbKeys, _ := rdb.Keys(ctx, "database:*").Result()
+			allKeys := append(serviceKeys, dbKeys...)
+
+			if len(allKeys) == 0 {
+				fmt.Println("No active services or databases found.")
 				return
 			}
-			for _, key := range keys {
-				port, err := rdb.Get(ctx, key).Result()
+
+			fmt.Printf("%-12s %-20s %-10s %s\n", "TYPE", "NAME", "PID", "IP")
+			fmt.Println(strings.Repeat("-", 55))
+
+			for _, key := range allKeys {
+				val, err := rdb.Get(ctx, key).Result()
 				if err != nil {
 					slog.Error("Failed to get value from Redis", "key", key, "error", err)
+					continue
 				}
-				resourceType := strings.Split(key, ":")[0]
-				resourceName := strings.Split(key, ":")[1]
+
+				parts := strings.SplitN(key, ":", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				resourceType := parts[0]
+				resourceName := parts[1]
+
+				var entry Service
+				if err := yaml.Unmarshal([]byte(val), &entry); err != nil {
+					entry.Pid = val
+				}
+
 				fmt.Printf(
-					"resource type: %s\t resource name: %s\t port: %s\n",
+					"%-12s %-20s %-10s %s\n",
 					resourceType,
 					resourceName,
-					port,
+					entry.Pid,
+					entry.IP,
 				)
 			}
 		},

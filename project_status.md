@@ -40,4 +40,3 @@ The project's active refactoring goals listed in `plan.md` are:
 ## 🚀 Recommended Next Steps
 
 1.  **Dynamic IP Address Allocation:** Replace the hardcoded `10.0.0.2/24` and `10.0.0.3/24` IPs with a dynamic allocator (e.g., querying a pool or scanning the `10.0.0.0/24` subnet for unused IPs) to support multiple concurrent workloads.
-2.  **Implement Filesystem chroot/pivot_root:** Integrate the Alpine rootfs chroot logic discussed in the architecture guide for true filesystem isolation.

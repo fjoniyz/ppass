@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -17,7 +16,7 @@ import (
 	"private_paas/cmd"
 )
 
-func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge) {
+func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge, ip string) {
 	// Write logs to a file instead of inheriting parent's stdout/stderr
 	logFile, err := os.OpenFile(
 		fmt.Sprintf("/var/log/%s.log", s.Name),
@@ -65,7 +64,7 @@ func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge) {
 	logFile.Close()
 
 	if s.Lb {
-		s.ConnectToLb(bridge)
+		s.ConnectToLb(bridge, ip)
 	}
 
 	if err := cmd.Process.Release(); err != nil {
@@ -109,19 +108,8 @@ func (s *Service) cg(pid int) {
 }
 
 // ConnectToLb connects the service process to the load balancer bridge
-func (s *Service) ConnectToLb(bridge *netlink.Bridge) {
+func (s *Service) ConnectToLb(bridge *netlink.Bridge, ip string) {
 	slog.Info("Connecting service to bridge", "service", s.Name, "bridge", bridge.Attrs().Name)
-
-	// Set up the connection between the service and the bridge
-	// Use the IP from the config if available, otherwise fallback to a default
-	ip := "10.0.0.2/24"
-	if len(s.LbConfig.Servers) > 0 {
-		// Servers are in format "IP:PORT", we need "IP/24"
-		parts := strings.Split(s.LbConfig.Servers[0], ":")
-		if len(parts) > 0 {
-			ip = parts[0] + "/24"
-		}
-	}
 
 	err := cmd.ConnectProcessToBridge(s.Pid, bridge, ip, fmt.Sprintf("v-%s", s.Name))
 	if err != nil {
@@ -131,7 +119,7 @@ func (s *Service) ConnectToLb(bridge *netlink.Bridge) {
 	}
 }
 
-func (s *Service) CreateService(body string, bridge *netlink.Bridge) {
+func (s *Service) CreateService(body string, bridge *netlink.Bridge, ip string) {
 	// Populate the service struct from the YAML body
 	s.ParseService(body)
 
@@ -142,10 +130,13 @@ func (s *Service) CreateService(body string, bridge *netlink.Bridge) {
 		slog.Info("Executing Python service", "name", s.Name)
 		if s.Lb {
 			slog.Info("Adding the service to the load balancer", "name", s.Name)
+			if len(s.LbConfig.Servers) == 0 {
+				s.LbConfig.Servers = []string{fmt.Sprintf("%s:8888", ip)}
+			}
 			UpdateLbConfig(s.LbConfig)
 		}
 		cmd := exec.Command("python3", s.Path)
-		s.execPythonService(cmd, bridge)
+		s.execPythonService(cmd, bridge, ip)
 
 	default:
 		slog.Warn("Unsupported technology", "technology", s.Technology)

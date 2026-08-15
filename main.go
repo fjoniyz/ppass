@@ -25,8 +25,9 @@ type File struct {
 }
 
 type Service struct {
-	Pid            string
-	ConfigFileName string
+	Pid            string `yaml:"pid"`
+	ConfigFileName string `yaml:"configfilename"`
+	IP             string `yaml:"ip"`
 }
 
 var ctx = context.Background()
@@ -42,8 +43,15 @@ func deleteProcess(rdb *redis.Client, name string, type_ string) {
 	// ServiceStruct is stored as a YAML string in Redis, so we need to unmarshal it back to the struct
 	var service Service
 	if err := yaml.Unmarshal([]byte(serviceStruct), &service); err != nil {
-		slog.Error("Failed to unmarshal service struct from Redis", "error", err)
-		return
+		// Fallback if stored as plain pid string
+		service.Pid = serviceStruct
+	}
+
+	// Release IP address back to IPAM pool
+	if service.IP != "" {
+		if err := cmd.ReleaseIp(service.IP); err != nil {
+			slog.Error("Failed to release IP for process", "ip", service.IP, "error", err)
+		}
 	}
 
 	// 1. Kill the process
@@ -74,7 +82,7 @@ func deleteProcess(rdb *redis.Client, name string, type_ string) {
 		slog.Info("Restarted Envoy process successfully")
 	}
 
-	// 4. Delete from Redis
+	// 5. Delete from Redis
 	if err := rdb.Del(ctx, key).Err(); err != nil {
 		slog.Error("Failed to delete process from Redis", "error", err)
 	} else {
@@ -130,23 +138,43 @@ func main() {
 			})
 			defer rdb.Close()
 
-			keys, err := rdb.Keys(ctx, "*").Result()
-			if err != nil {
-				slog.Error("Failed to fetch keys from Redis", "error", err)
+			serviceKeys, _ := rdb.Keys(ctx, "service:*").Result()
+			dbKeys, _ := rdb.Keys(ctx, "database:*").Result()
+			allKeys := append(serviceKeys, dbKeys...)
+
+			if len(allKeys) == 0 {
+				fmt.Println("No active services or databases found.")
 				return
 			}
-			for _, key := range keys {
-				port, err := rdb.Get(ctx, key).Result()
+
+			fmt.Printf("%-12s %-20s %-10s %s\n", "TYPE", "NAME", "PID", "IP")
+			fmt.Println(strings.Repeat("-", 55))
+
+			for _, key := range allKeys {
+				val, err := rdb.Get(ctx, key).Result()
 				if err != nil {
 					slog.Error("Failed to get value from Redis", "key", key, "error", err)
+					continue
 				}
-				resourceType := strings.Split(key, ":")[0]
-				resourceName := strings.Split(key, ":")[1]
+
+				parts := strings.SplitN(key, ":", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				resourceType := parts[0]
+				resourceName := parts[1]
+
+				var entry Service
+				if err := yaml.Unmarshal([]byte(val), &entry); err != nil {
+					entry.Pid = val
+				}
+
 				fmt.Printf(
-					"resource type: %s\t resource name: %s\t port: %s\n",
+					"%-12s %-20s %-10s %s\n",
 					resourceType,
 					resourceName,
-					port,
+					entry.Pid,
+					entry.IP,
 				)
 			}
 		},
@@ -177,12 +205,16 @@ func main() {
 				return
 			}
 
+			// Using goipam as IP allocator manager
+			ipamStruct := cmd.GetIp()
+
 			switch file.Type {
 			case "service":
 				slog.Info("Creating service with body", "body", file.Body)
+				slog.Info("Allocated IP for service", "ip", ipamStruct.Ip)
 				bridge := cmd.CreateBridge()
 				s := parser.Service{}
-				s.CreateService(file.Body, bridge)
+				s.CreateService(file.Body, bridge, ipamStruct.Ip)
 				pidString := strconv.Itoa(s.Pid)
 
 				envoyConfigPath := ""
@@ -196,6 +228,7 @@ func main() {
 				redisServiceEntry := Service{
 					Pid:            pidString,
 					ConfigFileName: envoyConfigPath,
+					IP:             ipamStruct.Ip,
 				}
 
 				// Marshal the struct to a string for storage in Redis
@@ -210,9 +243,15 @@ func main() {
 
 			case "db":
 				slog.Info("Creating database with body", "body", file.Body)
+				slog.Info("Allocated IP for database", "ip", ipamStruct.Ip)
 				d := parser.Database{}
-				d.CreateDatabase(file.Body)
-				rdb.Set(ctx, "database:"+d.Name, d.Pid, 0)
+				d.CreateDatabase(file.Body, ipamStruct.Ip)
+				dbEntry := Service{
+					Pid: d.Pid,
+					IP:  ipamStruct.Ip,
+				}
+				dbEntryStr, _ := yaml.Marshal(dbEntry)
+				rdb.Set(ctx, "database:"+d.Name, dbEntryStr, 0)
 			default:
 				slog.Warn("Unknown file type", "type", file.Type)
 			}

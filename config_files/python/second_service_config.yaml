@@ -6,7 +6,5 @@ body: |
   technology: python
   lbconfig:
     upstreamname: second_service
-    servers:
-      - 10.0.0.3:8888
     listenport: 8081
     domain: second.local

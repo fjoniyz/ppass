@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -9,19 +10,28 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	goipam "github.com/metal-stack/go-ipam"
+	"github.com/redis/go-redis/v9"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 
 	"private_paas/utils"
 )
 
+type IpamStruct struct {
+	Ip   string
+	Ipam *goipam.Ipamer
+}
+
 type ProcessStruct struct {
 	Pid      int
 	NsID     string
 	VethName string
+	Ipam     IpamStruct
 }
 
 // Pair is a struct representing a virtual ethernet pair
@@ -65,7 +75,12 @@ func configureInterfaceInNamespace(
 		return fmt.Errorf("failed to find link %s inside namespace: %w", vethName, err)
 	}
 
-	addr, err := netlink.ParseAddr(ipStr)
+	slog.Info("Configuring interface in namespace", "pid", pid, "vethName", vethName, "ip", ipStr)
+	cidr := ipStr
+	if !strings.Contains(cidr, "/") {
+		cidr += "/24"
+	}
+	addr, err := netlink.ParseAddr(cidr)
 	if err != nil {
 		return fmt.Errorf("failed to parse IP address %s: %w", ipStr, err)
 	}
@@ -245,7 +260,121 @@ func moveProcessToEnvoyCgroup(pid int) {
 	_ = os.WriteFile("/var/log/paas-cgroup.log", []byte(logMsg), 0o644)
 }
 
+var (
+	memStorage     goipam.Storage
+	memStorageOnce sync.Once
+)
+
+func getFallbackStorage(ctx context.Context) goipam.Storage {
+	memStorageOnce.Do(func() {
+		memStorage = goipam.NewMemory(ctx)
+	})
+	return memStorage
+}
+
+func GetIpam() (goipam.Ipamer, error) {
+	ctx := context.Background()
+	var storage goipam.Storage
+
+	// Probe Redis with a quick timeout
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        "localhost:6379",
+		DialTimeout: 200 * time.Millisecond,
+	})
+	pingCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	err := rdb.Ping(pingCtx).Err()
+	cancel()
+	_ = rdb.Close()
+
+	if err == nil {
+		redisStorage, rErr := goipam.NewRedis(ctx, "localhost", "6379")
+		if rErr == nil {
+			storage = redisStorage
+		}
+	}
+
+	if storage == nil {
+		storage = getFallbackStorage(ctx)
+	}
+
+	ipam := goipam.NewWithStorage(storage)
+
+	prefix, err := ipam.PrefixFrom(ctx, "10.0.0.0/24")
+	if err != nil || prefix == nil {
+		_, err = ipam.NewPrefix(ctx, "10.0.0.0/24")
+		if err != nil && !strings.Contains(err.Error(), "already") {
+			return nil, fmt.Errorf("failed to create IPAM prefix: %w", err)
+		}
+		// Reserve 10.0.0.254 for host bridge br0
+		_, _ = ipam.AcquireSpecificIP(ctx, "10.0.0.0/24", "10.0.0.254")
+	}
+
+	return ipam, nil
+}
+
+func ReleaseIp(ipStr string) error {
+	ipam, err := GetIpam()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	cleanIP := strings.Split(ipStr, "/")[0]
+	cleanIP = strings.TrimSpace(cleanIP)
+	if cleanIP == "" {
+		return nil
+	}
+	err = ipam.ReleaseIPFromPrefix(ctx, "10.0.0.0/24", cleanIP)
+	if err != nil {
+		slog.Error("Failed to release IP", "ip", cleanIP, "error", err)
+		return err
+	}
+	slog.Info("Successfully released IP", "ip", cleanIP)
+	return nil
+}
+
+func GetOrAcquireEnvoyIp() (string, error) {
+	ipam, err := GetIpam()
+	if err != nil {
+		return "", err
+	}
+	ctx := context.Background()
+
+	// Specifically allocate 10.0.0.1 for Envoy gateway if available
+	ip, err := ipam.AcquireSpecificIP(ctx, "10.0.0.0/24", "10.0.0.1")
+	if err == nil && ip != nil {
+		return ip.IP.String(), nil
+	}
+
+	// 10.0.0.1 was already allocated (e.g. from previous run), reuse it for Envoy
+	return "10.0.0.1", nil
+}
+
+func GetIp() IpamStruct {
+	ipam, err := GetIpam()
+	if err != nil {
+		slog.Error("Failed to get IPAM instance", "error", err)
+		return IpamStruct{}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ip, err := ipam.AcquireIP(ctx, "10.0.0.0/24")
+	if err != nil || ip == nil {
+		slog.Error("Failed to acquire IP", "error", err)
+		return IpamStruct{}
+	}
+
+	ipamStruct := IpamStruct{
+		Ip:   ip.IP.String(),
+		Ipam: &ipam,
+	}
+
+	return ipamStruct
+}
+
 // Start Envoy process
+// It gets the IP address for the process
 func StartEnvoy() (int, error) {
 	// Stop existing PaaS envoy if any
 	pid, err := utils.FindPidForEnvoy()
@@ -264,7 +393,16 @@ func StartEnvoy() (int, error) {
 	}
 
 	// Start envoy with custom config
-	cmd := exec.Command("envoy", "-c", "/run/envoy-paas.yaml", "--disable-hot-restart")
+	envoyBin := "envoy"
+	if path, err := exec.LookPath("envoy"); err == nil {
+		envoyBin = path
+	} else if _, err := os.Stat("/home/linuxbrew/.linuxbrew/bin/envoy"); err == nil {
+		envoyBin = "/home/linuxbrew/.linuxbrew/bin/envoy"
+	} else if _, err := os.Stat("/usr/local/bin/envoy"); err == nil {
+		envoyBin = "/usr/local/bin/envoy"
+	}
+
+	cmd := exec.Command(envoyBin, "-c", "/run/envoy-paas.yaml", "--disable-hot-restart")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
 		Cloneflags: syscall.CLONE_NEWNET,
@@ -300,12 +438,19 @@ func StartEnvoy() (int, error) {
 		slog.Error("Failed to write Envoy PID file", "error", err)
 	}
 
+	ip, err := GetOrAcquireEnvoyIp()
+	if err != nil {
+		slog.Error("Failed to acquire IP for Envoy", "error", err)
+		return 0, err
+	}
+	slog.Info("Acquired IP for Envoy", "ip", ip)
+
 	// Connect Envoy to the bridge
 	bridge := CreateBridge()
-	if err := ConnectProcessToBridge(pid, bridge, "10.0.0.1/24", "v-envoy"); err != nil {
+	if err := ConnectProcessToBridge(pid, bridge, ip, "v-envoy"); err != nil {
 		slog.Error("Failed to connect Envoy to bridge", "error", err)
 	} else {
-		slog.Info("Successfully connected Envoy to bridge", "pid", pid, "ip", "10.0.0.1/24")
+		slog.Info("Successfully connected Envoy to bridge", "pid", pid, "ip", ip)
 	}
 
 	// Wait a bit for envoy to initialize

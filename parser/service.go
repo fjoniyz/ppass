@@ -13,7 +13,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
-	"private_paas/cmd"
+	"private_paas/network"
 )
 
 func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge, ip string) {
@@ -111,7 +111,7 @@ func (s *Service) cg(pid int) {
 func (s *Service) ConnectToLb(bridge *netlink.Bridge, ip string) {
 	slog.Info("Connecting service to bridge", "service", s.Name, "bridge", bridge.Attrs().Name)
 
-	err := cmd.ConnectProcessToBridge(s.Pid, bridge, ip, fmt.Sprintf("v-%s", s.Name))
+	err := network.ConnectProcessToBridge(s.Pid, bridge, ip, fmt.Sprintf("v-%s", s.Name))
 	if err != nil {
 		slog.Error("Failed to connect service to bridge", "error", err)
 	} else {

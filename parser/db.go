@@ -11,16 +11,16 @@ import (
 	"strings"
 	"syscall"
 
-	"private_paas/cmd"
+	"private_paas/network"
 )
 
 func (d *Database) ConnectToBridge(ip string) {
-	bridge := cmd.CreateBridge()
+	bridge := network.CreateBridge()
 	pid, _ := strconv.Atoi(d.Pid)
 
 	slog.Info("Connecting database to bridge", "database", d.Name, "bridge", bridge.Attrs().Name)
 
-	err := cmd.ConnectProcessToBridge(pid, bridge, ip, fmt.Sprintf("v-%s", d.Name))
+	err := network.ConnectProcessToBridge(pid, bridge, ip, fmt.Sprintf("v-%s", d.Name))
 	if err != nil {
 		slog.Error("Failed to connect database to bridge", "error", err)
 	} else {

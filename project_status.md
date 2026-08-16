@@ -4,8 +4,9 @@ This project is a custom **Private PaaS (Platform as a Service)** written in Go.
 
 ## 📁 Repository Structure
 
-*   [main.go](file:///home/d0sta/private_paas/main.go): The entrypoint that defines the Cobra CLI with `create`, `delete`, and `cleanup` commands. It interacts with Redis to track deployed processes.
-*   [cmd/network_manager.go](file:///home/d0sta/private_paas/cmd/network_manager.go): Implements the lower-level Linux network orchestration (creating the `br0` bridge, managing virtual ethernet (`veth`) pairs, switching interfaces between namespaces, and writing routing table policies).
+*   [main.go](file:///home/d0sta/ppass/main.go): The entrypoint that calls `cmd.Execute()`.
+*   [cmd/](file:///home/d0sta/ppass/cmd/): Defines the Cobra CLI with `create`, `delete`, `list`, and `cleanup` commands, interacting with Redis to track deployed processes.
+*   [network/network_manager.go](file:///home/d0sta/ppass/network/network_manager.go): Implements low-level Linux network orchestration (creating the `br0` bridge, managing virtual ethernet (`veth`) pairs, switching interfaces between namespaces, IPAM dynamic IP allocation, and Envoy lifecycle).
 *   [parser/](file:///home/d0sta/private_paas/parser/):
     *   [service.go](file:///home/d0sta/private_paas/parser/service.go) / [service_parser.go](file:///home/d0sta/private_paas/parser/service_parser.go): Parses YAML declarations for services, executes them as isolated Python subprocesses with `CLONE_NEWNET`, setups resource restrictions using cgroups, and links them to the software bridge.
     *   [db.go](file:///home/d0sta/private_paas/parser/db.go) / [db_parser.go](file:///home/d0sta/private_paas/parser/db_parser.go): Manages Postgres database configurations, invoking databases in separate namespaces via `ip netns exec`.

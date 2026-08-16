@@ -14,7 +14,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"gopkg.in/yaml.v2"
 
-	"private_paas/cmd"
+	"private_paas/network"
 	"private_paas/utils"
 )
 
@@ -166,7 +166,7 @@ func UpdateLbConfig(config ServiceEnvoyConfig) {
 	slog.Info("Successfully generated Envoy config", "path", "/run/envoy-paas.yaml")
 
 	// 5. Restart Envoy to apply changes
-	if _, err := cmd.StartEnvoy(); err != nil {
+	if _, err := network.StartEnvoy(); err != nil {
 		slog.Error("Failed to restart Envoy", "error", err)
 	} else {
 		slog.Info("Successfully restarted Envoy")

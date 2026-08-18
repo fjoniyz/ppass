@@ -16,19 +16,21 @@ import (
 	"private_paas/network"
 )
 
+var candidates = []string{
+	"/usr/lib/postgresql/14/bin",
+	"/usr/lib/postgresql/12/bin",
+	"/usr/lib/postgresql/16/bin",
+	"/usr/lib/postgresql/15/bin",
+	"/usr/lib/postgresql/13/bin",
+	"/usr/local/bin",
+}
+
 func findPostgresBin() string {
 	if path, err := exec.LookPath("postgres"); err == nil {
 		return path
 	}
-	candidates := []string{
-		"/usr/lib/postgresql/14/bin/postgres",
-		"/usr/lib/postgresql/12/bin/postgres",
-		"/usr/lib/postgresql/16/bin/postgres",
-		"/usr/lib/postgresql/15/bin/postgres",
-		"/usr/lib/postgresql/13/bin/postgres",
-		"/usr/local/bin/postgres",
-	}
 	for _, c := range candidates {
+		c += "/postgres"
 		if _, err := os.Stat(c); err == nil {
 			return c
 		}
@@ -40,15 +42,8 @@ func findInitdbBin() string {
 	if path, err := exec.LookPath("initdb"); err == nil {
 		return path
 	}
-	candidates := []string{
-		"/usr/lib/postgresql/14/bin/initdb",
-		"/usr/lib/postgresql/12/bin/initdb",
-		"/usr/lib/postgresql/16/bin/initdb",
-		"/usr/lib/postgresql/15/bin/initdb",
-		"/usr/lib/postgresql/13/bin/initdb",
-		"/usr/local/bin/initdb",
-	}
 	for _, c := range candidates {
+		c += "/initdb"
 		if _, err := os.Stat(c); err == nil {
 			return c
 		}

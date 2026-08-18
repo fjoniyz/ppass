@@ -120,6 +120,8 @@ sudo systemctl start redis-server # or redis-cli ping
 | :--- | :--- |
 | `make build` | Compile the `paas` binary |
 | `make test` | Run the complete unit test suite |
+| `make run-db` | Start `user-db` PostgreSQL database |
+| `make delete-db` | Stop `user-db` database and release its IP |
 | `make run-second-service` | Start `second-service` (`second.local:8081`) |
 | `make test-second-service` | Test `second-service` (Envoy + direct curl) |
 | `make delete-second-service`| Stop `second-service` and release its IP |

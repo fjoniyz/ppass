@@ -1,6 +1,7 @@
-.PHONY: all build test run-second-service test-second-service delete-second-service run-api-service test-api-service delete-api-service list logs clean help
+.PHONY: all build test run-db delete-db run-second-service test-second-service delete-second-service run-api-service test-api-service delete-api-service list logs clean help
 
 BINARY=paas
+DB_CONFIG=config_files/databases/user_db_config.yaml
 SECOND_CONFIG=config_files/python/second_service_config.yaml
 API_CONFIG=config_files/python/api_service_config.yaml
 ENVOY_IP=10.0.0.1
@@ -11,6 +12,8 @@ help:
 	@echo "Available Makefile commands:"
 	@echo "  make build                     - Build the paas binary"
 	@echo "  make test                      - Run all unit tests"
+	@echo "  make run-db                    - Start user-db database"
+	@echo "  make delete-db                 - Delete user-db and release resources"
 	@echo "  make run-second-service        - Start second-service (port 8081, domain second.local)"
 	@echo "  make test-second-service       - Test second-service via Envoy and directly"
 	@echo "  make delete-second-service     - Delete second-service and release resources"
@@ -28,6 +31,15 @@ build:
 test:
 	@echo "==> Running unit tests..."
 	go test -v ./...
+
+# database
+run-db: build
+	@echo "==> Starting database (user-db)..."
+	sudo ./$(BINARY) create $(DB_CONFIG)
+
+delete-db:
+	@echo "==> Deleting database (user-db)..."
+	sudo ./$(BINARY) delete database user-db
 
 # second-service
 run-second-service: build

@@ -70,11 +70,6 @@ func (s *Service) execPythonService(cmd *exec.Cmd, bridge *netlink.Bridge, ip st
 	if err := cmd.Process.Release(); err != nil {
 		log.Fatalf("Failed to release process: %v", err)
 	}
-
-	err = syscall.Chroot("/home/d0sta/ppass/rootfs/")
-	if err != nil {
-		log.Fatalf("Failed to chroot to rootfs: %v", err)
-	}
 }
 
 // cg places the process into a cgroup

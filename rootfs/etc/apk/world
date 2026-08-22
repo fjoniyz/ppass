@@ -4,3 +4,4 @@ alpine-release
 apk-tools
 busybox
 musl-utils
+python3

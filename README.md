@@ -5,15 +5,19 @@
 A lightweight, custom **Platform-as-a-Service (PaaS)** built in Go for Linux environments.
 
 Instead of relying on heavy container runtimes like Docker, containerd, or Kubernetes, `ppass` orchestrates workloads using **native Linux kernel primitives**:
-- **Network Namespaces** (`CLONE_NEWNET`, `ip netns`) for complete network stack isolation.
-- **Virtual Ethernet (`veth`) Pairs & Linux Bridge (`br0`)** for packet forwarding and inter-service routing.
-- **cgroups v2** for CPU, memory, and PID resource restrictions.
-- **Shared IPAM (IP Address Management)** backed by Redis for dynamic, conflict-free IP assignment.
-- **Isolated Envoy Load Balancer** for ingress routing and domain-based reverse proxying.
+- **Mount Namespaces & Filesystem Isolation (`CLONE_NEWNS`, `pivot_root`):** Workloads are jailed inside an isolated Alpine Linux `rootfs` with its own Python runtime, completely separated from the host filesystem.
+- **PID Namespaces (`CLONE_NEWPID`):** Workloads run in an isolated process tree with a dedicated `/proc` mount where the application executes as PID 1.
+- **Network Namespaces (`CLONE_NEWNET`):** Complete network stack isolation per workload and for the Envoy proxy.
+- **Virtual Ethernet (`veth`) Pairs & Linux Bridge (`br0`):** Virtual patch cables and a software bridge (`10.0.0.254/24`) for inter-service and proxy routing.
+- **In-Namespace Firewalling (`iptables`):** Workload namespaces drop all external traffic except loopback and bridge subnet requests.
+- **cgroups v2:** Hard limits on memory (`memory.max`), CPU quota (`cpu.max`), and thread/process count (`pids.max` for fork-bomb protection).
+- **Shared IPAM (IP Address Management):** Backed by Redis for persistent, conflict-free IP assignment across CLI invocations (`10.0.0.0/24`).
+- **Isolated Envoy Ingress Gateway:** Dynamic domain-based reverse proxying (`second.local`, `api.local`) generated from Go templates and isolated in its own network namespace on `10.0.0.1`.
+- **Native Database Orchestration:** PostgreSQL clusters initialized with `initdb`, executed under non-root system credentials, and attached to the bridge network.
 
 ---
 
-## 🏗️ Architecture & Network Topology
+## 🏗️ Architecture & Topology
 
 ```
 +-----------------------------------------------------------------------------------------+
@@ -26,11 +30,12 @@ Instead of relying on heavy container runtimes like Docker, containerd, or Kuber
 |           |                            |                             |                  |
 |           | (v-envoy_n)                | (v-second_n)                | (v-api_n)        |
 |  +--------v-------------------+ +------v--------------------+ +------v---------------+  |
-|  | NetNS: Envoy Proxy         | | NetNS: second-service     | | NetNS: api-service    |  |
+|  | NetNS: Envoy Proxy         | | Namespaces: second-service| | Namespaces: api-svc   |  |
 |  | IP: 10.0.0.1/24            | | IP: 10.0.0.2/24           | | IP: 10.0.0.3/24       |  |
-|  | Listeners:                 | | Python HTTP Server (8888) | | Python API (8888)     |  |
-|  |  - 8081 -> second.local    | | cgroup: /sys/fs/cgroup/PID| | cgroup: /sys/fs/cgroup|  |
-|  |  - 8082 -> api.local       | |                           | |                       |  |
+|  | Ingress Listeners:         | | NetNS: CLONE_NEWNET       | | NetNS: CLONE_NEWNET   |  |
+|  |  - 8081 -> second.local    | | MountNS: Alpine rootfs    | | MountNS: Alpine rootfs|  |
+|  |  - 8082 -> api.local       | | PIDNS: PID 1 in /proc     | | PIDNS: PID 1 in /proc |  |
+|  | cgroup: /sys/fs/cgroup     | | cgroup: /sys/fs/cgroup/PID| | cgroup: /sys/fs/cgroup|  |
 |  +----------------------------+ +---------------------------+ +-----------------------+  |
 |                                                                                         |
 |  State Management & IPAM: Redis (localhost:6379)                                        |
@@ -41,24 +46,30 @@ Instead of relying on heavy container runtimes like Docker, containerd, or Kuber
 
 ## ⚙️ Core Functionalities
 
-### 1. Process & Network Isolation
+### 1. Process, Filesystem & Namespace Isolation
 
-Every workload deployed by `ppass` is isolated into its own dedicated network namespace:
+`ppass` isolates workloads across three core kernel dimensions:
 
-- **Services (Python, Go, etc.):** Spawned with Go's `syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET, Setsid: true}`. The kernel creates an independent network stack containing only an inactive loopback interface.
-- **Databases (PostgreSQL):** Isolated in named namespaces via `ip netns add ns-<name>` and executed via `ip netns exec`.
-- **Envoy Proxy:** Runs in its own isolated network namespace on a dedicated gateway IP.
+- **The Go Self-Exec Pattern (`/proc/self/exe`):** Because Go's multi-threaded runtime prohibits running arbitrary Go code between `fork` and `exec`, the parent CLI launches `/proc/self/exe` with `_PAAS_CONTAINER_INIT=1` under `CLONE_NEWNET | CLONE_NEWNS | CLONE_NEWPID`. The child process intercepts this in `main.go` and performs namespace setup before calling `syscall.Exec`.
+- **Filesystem Isolation (`pivot_root` & `rootfs`):** 
+  1. The workload script directory is bind-mounted to `/app` inside the standalone Alpine `rootfs`.
+  2. The container root is swapped using `syscall.PivotRoot(rootfs, putold)`.
+  3. The old host root (`/.oldroot`) is unmounted with `MNT_DETACH` and removed, air-gapping the container from host files.
+- **Process Isolation (`CLONE_NEWPID`):** A private `procfs` is mounted at `/proc`, isolating the container's process table so the application runs as PID 1 and cannot see or signal host processes.
+- **Network Isolation (`CLONE_NEWNET`):** Creates an independent network stack containing only an inactive loopback interface.
+- **Databases (PostgreSQL):** Bootstrapped with `initdb`, executed under non-root credentials (`syscall.Credential{Uid, Gid}`), and isolated in a dedicated network namespace.
 
 ### 2. Network Plumbing & Bridge Routing
 
-When a workload starts, `ppass` connects it to the host network bridge `br0`:
+When a workload starts, `ppass` links it to the host network bridge `br0`:
 
-1. **Veth Pair Generation:** Creates a virtual ethernet pair with truncated safe interface names:
+1. **Veth Pair Generation:** Creates a virtual ethernet pair with truncated safe interface names (respecting the 15-character `IFNAMSIZ` limit):
    - `v-<name>_<pid>_n` (inside namespace)
    - `v-<name>_<pid>_b` (bridge attachment)
 2. **Namespace Injection:** Opens `/proc/<pid>/ns/net` and moves the `_n` interface into the child process's network namespace using `netlink.LinkSetNsFd`.
 3. **Bridge Attachment:** Attaches the `_b` interface to `br0` (`netlink.LinkSetMaster`) and sets it `UP`.
-4. **Namespace Configuration:** Enters the child namespace via `netns.Set`, assigns the allocated IP address (`netlink.AddrAdd`), sets the interface `UP`, and brings up the loopback interface (`lo`).
+4. **Namespace Configuration (with OS Thread Locking):** Calls `runtime.LockOSThread()` to prevent goroutine thread migration, enters the child namespace via `netns.Set`, assigns the allocated IP address (`netlink.AddrAdd`), sets the interface `UP`, and brings up the loopback interface (`lo`).
+5. **In-Namespace Firewalling (`iptables`):** Injects firewall rules inside the container namespace to allow `lo`, accept established connections, allow traffic from `10.0.0.0/24`, and drop all other ingress packets.
 
 ### 3. Shared IP Address Management (IPAM)
 
@@ -75,7 +86,7 @@ IP addresses are managed across CLI commands using a **Redis-backed IPAM engine*
 
 Each workload process is enrolled in a dedicated cgroup v2 hierarchy (`/sys/fs/cgroup/<pid>` or `/sys/fs/cgroup/envoyLb`):
 
-- **Memory Limit:** Configured via `memory.max` (e.g., `128M`, `200M`).
+- **Memory Limit:** Configured via `memory.max` (e.g., `128M`, `200M`). Triggers kernel OOM kill on breach.
 - **CPU Quota:** Configured via `cpu.max` (e.g., `50000 100000` for 50% CPU limit).
 - **Process Count (Fork-bomb protection):** Configured via `pids.max` (e.g., `15`, `20`).
 
@@ -85,7 +96,7 @@ Envoy runs as an isolated proxy that dynamically updates whenever services are c
 
 1. **Configuration Generation:** Each service writes its configuration fragment to `/etc/envoy/conf.d/<upstream>.yaml`.
 2. **Template Rendering:** `ppass` reads all fragments and renders a combined Envoy configuration to `/run/envoy-paas.yaml` using Go templates.
-3. **Domain & Port Routing:** Traffic sent to Envoy on a configured port (e.g. `8081` or `8082`) with a matching `Host` header (e.g. `second.local`, `api.local`) is load balanced to the upstream workload's IP and port.
+3. **Domain & Port Routing:** Traffic sent to Envoy on a configured port (e.g. `8081` or `8082`) with a matching `Host` header (e.g. `second.local`, `api.local`) is reverse-proxied to the upstream workload's IP and port.
 
 ### 6. State Tracking in Redis
 
@@ -103,7 +114,7 @@ Active workloads are recorded in Redis under namespaced keys:
 - **Go 1.24+** (Go 1.26 recommended)
 - **Redis Server** running on `localhost:6379`
 - **Envoy Proxy** installed (via APT or Linuxbrew)
-- **Python 3**
+- **Alpine Rootfs** bundled in `rootfs/` with Python 3 installed
 
 ```bash
 # Start Redis
@@ -165,7 +176,7 @@ curl -i -H "Host: second.local" http://10.0.0.1:8081/
 curl -i -H "Host: api.local" http://10.0.0.1:8082/
 ```
 
-**Direct Connection (Namespace IP):**
+**Direct Connection (Namespace IP from Host):**
 ```bash
 curl http://10.0.0.2:8888/
 curl http://10.0.0.3:8888/
@@ -220,11 +231,14 @@ body: |
 ## 🔍 Troubleshooting & Verification
 
 ### Inspect a Namespace
-You can inspect the network interfaces and routing inside any running workload or Envoy namespace using `nsenter`:
+You can inspect the network interfaces, process table, and routing inside any running workload or Envoy namespace using `nsenter`:
 
 ```bash
 # View network interfaces inside Envoy
 sudo nsenter -t $(cat /run/envoy-paas.pid) -n ip addr
+
+# View isolated processes inside a service namespace
+sudo nsenter -t <SERVICE_PID> -p -m ps aux
 
 # View listening sockets inside a service
 sudo nsenter -t <SERVICE_PID> -n ss -tulpn
@@ -234,6 +248,7 @@ sudo nsenter -t <SERVICE_PID> -n ss -tulpn
 ```bash
 cat /sys/fs/cgroup/<SERVICE_PID>/cgroup.procs
 cat /sys/fs/cgroup/<SERVICE_PID>/memory.current
+cat /sys/fs/cgroup/<SERVICE_PID>/cpu.stat
 ```
 
 ### Check Logs
